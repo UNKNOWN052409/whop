@@ -1,0 +1,54 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "framework": "nextjs",
+  "regions": ["iad1"],
+  "crons": [
+    {
+      "path": "/api/cron/inventory-reaper",
+      "schedule": "0 * * * *"
+    },
+    {
+      "path": "/api/cron/reconcile",
+      "schedule": "17 3 * * *"
+    },
+    {
+      "path": "/api/cron/fulfillment-recovery",
+      "schedule": "*/5 * * * *"
+    }
+  ],
+  "functions": {
+    "src/app/api/cron/reconcile/route.ts": { "maxDuration": 300 },
+    "src/app/api/cron/fulfillment-recovery/route.ts": { "maxDuration": 120 },
+    "src/app/api/cron/inventory-reaper/route.ts": { "maxDuration": 60 },
+    "src/app/api/inngest/route.ts": { "maxDuration": 120 },
+    "src/app/api/checkout/route.ts": { "maxDuration": 15 },
+    "src/app/api/payments/status/route.ts": { "maxDuration": 10 },
+    "src/app/api/payments/webhook/route.ts": { "maxDuration": 10 },
+    "src/app/api/health/route.ts": { "maxDuration": 15 },
+    "src/app/api/metrics/route.ts": { "maxDuration": 10 },
+    "src/app/api/auth/login/route.ts": { "maxDuration": 10 },
+    "src/app/api/auth/logout/route.ts": { "maxDuration": 5 },
+    "src/app/api/auth/mfa/enrol/route.ts": { "maxDuration": 15 },
+    "src/app/api/auth/mfa/verify/route.ts": { "maxDuration": 15 }
+  },
+  "headers": [
+    {
+      "source": "/(.*)",
+      "headers": [
+        {
+          "key": "Strict-Transport-Security",
+          "value": "max-age=63072000; includeSubDomains; preload"
+        }
+      ]
+    },
+    {
+      "source": "/api/(.*)",
+      "headers": [
+        {
+          "key": "Cache-Control",
+          "value": "no-store, max-age=0, must-revalidate"
+        }
+      ]
+    }
+  ]
+}

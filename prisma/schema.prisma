@@ -1,0 +1,709 @@
+// Prisma schema — Phase 12 payment gateway + digital-goods fulfillment
+//
+// MONEY REPRESENTATION: every monetary column is an Int in MINOR UNITS
+// (cents/paise) paired with an explicit currency code. Never use Float/Double
+// for money — Whop itself returns decimal strings, and float drift on a margin
+// calculation is a real financial bug.
+//
+// REDEEM CODES: never stored in plaintext. See InventoryCode.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ---------------------------------------------------------------------------
+// Enums
+// ---------------------------------------------------------------------------
+
+enum UserRole {
+  CUSTOMER
+  SUPPORT
+  ADMIN
+  OWNER
+}
+
+enum ProductStatus {
+  DRAFT
+  ACTIVE
+  HIDDEN
+  ARCHIVED
+}
+
+enum DeliveryMethod {
+  EMAIL
+}
+
+enum InventoryStatus {
+  AVAILABLE
+  RESERVED
+  ASSIGNED
+  DELIVERED
+  REVOKED
+}
+
+enum OrderStatus {
+  CREATED
+  PAYMENT_PENDING
+  PAYMENT_VERIFIED
+  FULFILLMENT_PENDING
+  CODE_RESERVED
+  CODE_DELIVERED
+  COMPLETED
+
+  PAYMENT_FAILED
+  PAYMENT_EXPIRED
+  PAYMENT_REVERSED
+  FULFILLMENT_FAILED
+  REFUND_PENDING
+  REFUNDED
+  MANUAL_REVIEW
+  CANCELLED
+}
+
+enum PaymentStatus {
+  CREATED
+  PENDING
+  REQUIRES_ACTION
+  AUTHORIZED
+  PAID
+  FAILED
+  CANCELED
+  EXPIRED
+  PARTIALLY_REFUNDED
+  REFUNDED
+  DISPUTED
+  REVERSED
+}
+
+enum ProviderKind {
+  WHOP
+  WHOP_SANDBOX
+  STRIPE
+}
+
+enum EmailStatus {
+  QUEUED
+  SENT
+  DELIVERED
+  FAILED
+  SUPPRESSED
+}
+
+enum EmailProviderKind {
+  SES
+  RESEND
+  SMTP
+}
+
+enum FulfillmentStatus {
+  PENDING
+  RUNNING
+  SUCCEEDED
+  FAILED
+  DEAD_LETTER
+}
+
+enum RefundStatus {
+  PENDING
+  SUCCEEDED
+  FAILED
+}
+
+enum RiskLevel {
+  LOW
+  MEDIUM
+  HIGH
+  CRITICAL
+}
+
+enum RiskDecision {
+  ALLOW
+  REVIEW
+  BLOCK
+}
+
+enum ReconciliationType {
+  MISSING_PAYMENT
+  DUPLICATE_PAYMENT
+  WRONG_AMOUNT
+  WRONG_CURRENCY
+  REVERSED_PAYMENT
+  FAILED_WEBHOOK
+  MISSING_WEBHOOK
+  STUCK_ORDER
+  FULFILLMENT_MISMATCH
+  INVENTORY_DEPLETED
+}
+
+enum ReconciliationStatus {
+  OPEN
+  INVESTIGATING
+  RESOLVED
+  IGNORED
+}
+
+// ---------------------------------------------------------------------------
+// Identity & access
+// ---------------------------------------------------------------------------
+
+model User {
+  id           String   @id @default(cuid())
+  email        String   @unique
+  name         String?
+  passwordHash String?
+  role         UserRole @default(CUSTOMER)
+  emailVerifiedAt DateTime?
+  disabledAt   DateTime?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  mfaSecretCiphertext String?
+  mfaEnabledAt        DateTime?
+  /// Recovery codes, hashed (bcrypt). One row per code set.
+  mfaRecoveryHashes   String[] @default([])
+
+  sessions   Session[]
+  orders     Order[]
+  auditLogs  AuditLog[]
+  fraudEvents FraudEvent[]
+
+  @@index([role])
+}
+
+model Session {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  /// SHA-256 of the session token. The raw token only ever lives in the cookie.
+  tokenHash String   @unique
+  userAgent String?
+  ipHash    String?
+  expiresAt DateTime
+  revokedAt DateTime?
+  createdAt DateTime @default(now())
+  lastSeenAt DateTime @default(now())
+
+  @@index([userId])
+  @@index([expiresAt])
+}
+
+// ---------------------------------------------------------------------------
+// Catalog, suppliers, pricing
+// ---------------------------------------------------------------------------
+
+model Supplier {
+  id          String   @id @default(cuid())
+  name        String   @unique
+  /// Never exposed publicly. Encrypted at rest.
+  credentialsCiphertext String?
+  /// Authorization/reference for the supplier contract, for compliance audit.
+  authorizationRef String?
+  active      Boolean  @default(true)
+  notes       String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  products       ProductProvider[]
+  inventoryItems InventoryCode[]
+}
+
+/// Configurable business rules driving the discount/margin engine (spec §3).
+model PricingRule {
+  id            String   @id @default(cuid())
+  name          String   @unique
+  /// Minimum discount over face value before a product may be published.
+  minDiscountBps Int     @default(500) // 500 bps = 5.00%
+  /// Minimum gross margin over supplier cost before a product may be published.
+  minMarginBps   Int     @default(0)
+  /// Optional per-category overrides.
+  category      String?
+  active        Boolean  @default(true)
+  /// When true, products failing the rule are hidden from the storefront
+  /// but retained in the admin panel for review.
+  autoHideOnFail Boolean  @default(true)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+}
+
+model Product {
+  id          String   @id @default(cuid())
+  slug        String   @unique
+  productName String
+  brand       String
+  category    String
+  region      String   @default("US")
+  description String?
+  imageUrl    String?
+
+  /// Denormalised integer minor units for fast storefront reads.
+  currency       String
+  faceValueMinor    Int
+  sellingPriceMinor Int
+  supplierCostMinor Int
+
+  /// Discount = (faceValue - sellingPrice) / faceValue. Margin =
+  /// (sellingPrice - supplierCost) / sellingPrice. Both in basis points.
+  discountBps Int @default(0)
+  marginBps   Int @default(0)
+
+  deliveryMethod DeliveryMethod @default(EMAIL)
+
+  status       ProductStatus @default(DRAFT)
+  /// Denormalised AVAILABLE count, maintained transactionally with allocation.
+  inventoryCount Int          @default(0)
+
+  metadata    Json?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  providers  ProductProvider[]
+  inventory  InventoryCode[]
+  orders     Order[]
+
+  @@index([status, category])
+  @@index([brand])
+}
+
+/// Join model: a product may be sourced from several suppliers/providers.
+model ProductProvider {
+  id         String   @id @default(cuid())
+  productId  String
+  product    Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+  supplierId String
+  supplier   Supplier @relation(fields: [supplierId], references: [id], onDelete: Cascade)
+
+  supplierSku       String
+  supplierCostMinor Int
+  currency          String
+  region            String   @default("US")
+  active            Boolean  @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([productId, supplierId])
+  @@index([supplierId])
+}
+
+// ---------------------------------------------------------------------------
+// Inventory
+// ---------------------------------------------------------------------------
+
+model InventoryCode {
+  id        String @id @default(cuid())
+  productId String
+  product   Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+  supplierId String?
+  supplier  Supplier? @relation(fields: [supplierId], references: [id])
+
+  /// Internal supplier reference. Never exposed by any public API.
+  externalRef String?
+
+  /// AES-256-GCM ciphertext, encoded base64(iv || tag || ciphertext).
+  codeCiphertext String
+
+  /// Last 4 chars of the plaintext, for masked admin display only.
+  codeLast4 String
+
+  /// Deterministic HMAC of the plaintext. Enables duplicate-code detection
+  /// across imports WITHOUT decrypting anything, plus a unique index below.
+  codeFingerprint String
+
+  /// Redemption instructions shown in the delivery email.
+  redemptionInstructions String?
+
+  region      String  @default("US")
+  currency    String
+  faceValueMinor Int
+  /// Denormalised expiry so expiry sweeps are an indexed query, not a decrypt.
+  expiresAt   DateTime?
+
+  status      InventoryStatus @default(AVAILABLE)
+
+  /// Reservation lease. A reservation older than `reservationExpiresAt` is
+  /// reclaimable by the inventory reaper.
+  reservedAt         DateTime?
+  reservationExpiresAt DateTime?
+  orderId            String?    @unique
+  order              Order?     @relation(fields: [orderId], references: [id])
+
+  deliveredAt DateTime?
+  revokedAt   DateTime?
+
+  importBatchId String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([productId, codeFingerprint])
+  @@index([status, productId])
+  @@index([status, reservationExpiresAt])
+  @@index([status, expiresAt])
+  @@index([importBatchId])
+}
+
+model InventoryImportBatch {
+  id        String   @id @default(cuid())
+  supplierId String?
+  productId  String?
+  fileName   String?
+  totalRows  Int      @default(0)
+  importedRows Int    @default(0)
+  skippedRows  Int    @default(0)
+  errorRows    Int    @default(0)
+  /// Import errors keyed by row number. Contains no plaintext codes.
+  errors     Json?
+  status     String  @default("completed")
+  createdAt  DateTime @default(now())
+}
+
+// ---------------------------------------------------------------------------
+// Orders & payments
+// ---------------------------------------------------------------------------
+
+model Order {
+  id String @id @default(cuid())
+  /// Human-facing reference, e.g. ORD-7QK2M4XB.
+  reference String @unique
+  status    OrderStatus @default(CREATED)
+
+  productId String
+  product   Product @relation(fields: [productId], references: [id])
+  quantity  Int     @default(1)
+
+  userId    String?
+  user      User?   @relation(fields: [userId], references: [id])
+
+  /// Denormalised order snapshot: prices must never change after order creation.
+  productName       String
+  faceValueMinor    Int
+  sellingPriceMinor Int
+  unitPriceMinor    Int
+  currency          String
+  region            String
+
+  customerEmail String
+  /// Normalised lowercase for fraud velocity matching.
+  customerEmailNormalized String
+
+  totalMinor Int
+
+  deliveryMethod DeliveryMethod @default(EMAIL)
+
+  /// Fraud outcome gate — high-risk orders must not release inventory.
+  riskLevel   RiskLevel   @default(LOW)
+  riskScore   Int?
+  riskDecision RiskDecision @default(ALLOW)
+
+  paidAt           DateTime?
+  completedAt      DateTime?
+  cancelledAt      DateTime?
+  manualReviewReason String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  payments          Payment[]
+  paymentEvents     PaymentEvent[]
+  fulfillmentJobs   FulfillmentJob[]
+  inventoryCodes    InventoryCode[]
+  deliveries        Delivery[]
+  refunds           Refund[]
+  fraudEvents       FraudEvent[]
+  reconciliationRecords ReconciliationRecord[]
+  transitions       OrderStateTransition[]
+  idempotencyKeys   IdempotencyKey[]
+
+  @@index([status])
+  @@index([status, createdAt])
+  @@index([customerEmailNormalized])
+  @@index([createdAt])
+}
+
+model OrderStateTransition {
+  id        String   @id @default(cuid())
+  orderId   String
+  order     Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  fromState OrderStatus?
+  toState   OrderStatus
+  reason    String?
+  actor     String   @default("system")
+  metadata  Json?
+  createdAt DateTime @default(now())
+
+  @@index([orderId, createdAt])
+}
+
+model Payment {
+  id        String   @id @default(cuid())
+  orderId   String
+  order     Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  provider  ProviderKind
+  /// Provider's own payment id, e.g. pay_XXXX.
+  providerPaymentId String? @unique
+  /// Checkout configuration id we created, e.g. ch_XXXX.
+  providerCheckoutId String?
+
+  status    PaymentStatus @default(CREATED)
+  /// Verified only via webhook signature + provider API. Never from the client.
+  verifiedAt DateTime?
+
+  amountMinor   Int
+  currency      String
+  /// Whop `amount_after_fees` in minor units — the amount we actually net.
+  netAmountMinor Int?
+  feeMinor       Int?
+
+  /// Last 4 of the card, brand. No PAN, no CVV, ever.
+  cardBrand String?
+  cardLast4 String?
+
+  failureCode    String?
+  failureMessage String?
+  declineCode    String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  paymentEvents PaymentEvent[]
+  refunds       Refund[]
+  deliveries    Delivery[]
+  reconciliationRecords ReconciliationRecord[]
+
+  @@index([provider, providerPaymentId])
+  @@index([status])
+  @@index([orderId])
+}
+
+/// Raw, append-only record of every webhook envelope received. Kept for
+/// forensics and for the "failed webhook" reconciliation check.
+model PaymentEvent {
+  id        String   @id @default(cuid())
+  /// Provider event id (Whop envelope `id`, msg_XXXX). Unique = dedup.
+  providerEventId String @unique
+  provider  ProviderKind
+  eventType String
+  providerAccountId String?
+  accountId String?
+
+  orderId   String?
+  order     Order?   @relation(fields: [orderId], references: [id], onDelete: SetNull)
+  paymentId String?
+  payment   Payment? @relation(fields: [paymentId], references: [id], onDelete: SetNull)
+
+  signatureValid Boolean
+  payload        Json
+  headers        Json?
+
+  /// Set when the event has been turned into a state change. Guards against
+  /// double-fulfilment if the same event is replayed.
+  processedAt DateTime?
+  processingError String?
+  attemptCount  Int @default(0)
+
+  receivedAt DateTime @default(now())
+
+  @@index([eventType])
+  @@index([orderId])
+  @@index([signatureValid, receivedAt])
+}
+
+// ---------------------------------------------------------------------------
+// Fulfillment
+// ---------------------------------------------------------------------------
+
+model FulfillmentJob {
+  id      String @id @default(cuid())
+  orderId String
+  order   Order  @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  status     FulfillmentStatus @default(PENDING)
+  attempts   Int      @default(0)
+  maxAttempts Int    @default(8)
+  nextAttemptAt DateTime @default(now())
+  lastError  String?
+
+  /// Set once the job reaches a terminal state, preventing duplicate allocation
+  /// even if the durable queue redelivers the event.
+  inventoryAllocatedAt DateTime?
+
+  startedAt   DateTime?
+  completedAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  deliveries Delivery[]
+
+  @@unique([orderId])
+  @@index([status, nextAttemptAt])
+}
+
+model Delivery {
+  id       String @id @default(cuid())
+  orderId  String
+  order    Order  @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  fulfillmentJobId String?
+  fulfillmentJob   FulfillmentJob? @relation(fields: [fulfillmentJobId], references: [id])
+
+  /// Links a delivery back to the specific provider payment, so a refund can
+  /// find its delivery without loading the whole order graph.
+  paymentId String?
+  payment   Payment? @relation(fields: [paymentId], references: [id])
+
+  email     String
+  provider  EmailProviderKind
+  providerMessageId String?
+
+  status    EmailStatus @default(QUEUED)
+  attempts  Int @default(0)
+  lastError String?
+
+  sentAt      DateTime?
+  deliveredAt DateTime?
+  failedAt    DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([orderId])
+  @@index([status])
+}
+
+// ---------------------------------------------------------------------------
+// Refunds, fraud, reconciliation, audit
+// ---------------------------------------------------------------------------
+
+model Refund {
+  id        String @id @default(cuid())
+  orderId   String
+  order     Order  @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  paymentId String
+  payment   Payment @relation(fields: [paymentId], references: [id])
+
+  providerRefundId String?
+  status   RefundStatus @default(PENDING)
+  amountMinor Int
+  currency  String
+  reason    String?
+  failureMessage String?
+
+  initiatedBy String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  completedAt DateTime?
+
+  @@unique([orderId])
+  @@index([status])
+}
+
+model FraudEvent {
+  id       String @id @default(cuid())
+  orderId  String?
+  order    Order? @relation(fields: [orderId], references: [id], onDelete: SetNull)
+  userId   String?
+  user     User?  @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  emailNormalized String?
+  ipHash          String?
+
+  type      String
+  riskLevel RiskLevel      @default(LOW)
+  decision  RiskDecision   @default(ALLOW)
+  score     Int?
+  /// The signals that fired. Never contains raw PAN/CVV.
+  signals   Json
+  metadata  Json?
+
+  resolvedAt DateTime?
+  resolution String?
+
+  createdAt DateTime @default(now())
+
+  @@index([orderId])
+  @@index([riskLevel, createdAt])
+  @@index([emailNormalized, createdAt])
+}
+
+model ReconciliationRecord {
+  id       String @id @default(cuid())
+  type     ReconciliationType
+  status   ReconciliationStatus @default(OPEN)
+
+  orderId  String?
+  order    Order?   @relation(fields: [orderId], references: [id], onDelete: SetNull)
+  paymentId String?
+  payment  Payment? @relation(fields: [paymentId], references: [id], onDelete: SetNull)
+
+  /// Provider-side reference for provider discrepancies.
+  providerPaymentId String?
+
+  expected Json?
+  actual   Json?
+  discrepancy String?
+
+  runId    String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  resolvedAt DateTime?
+
+  @@index([status, type])
+  @@index([createdAt])
+  @@index([orderId])
+}
+
+model AuditLog {
+  id        String   @id @default(cuid())
+  actor     String   @default("system")
+  actorId   String?
+  actorUser User?    @relation(fields: [actorId], references: [id], onDelete: SetNull)
+  action    String
+  entity    String
+  entityId  String?
+  /// Redacted payload. Secrets are stripped before write.
+  metadata  Json?
+  ipHash    String?
+  createdAt DateTime @default(now())
+
+  @@index([entity, entityId])
+  @@index([actorId, createdAt])
+  @@index([createdAt])
+}
+
+/// Generic idempotency ledger for create-payment, refunds, etc.
+/// Webhooks dedupe separately via PaymentEvent.providerEventId.
+model IdempotencyKey {
+  id           String   @id @default(cuid())
+  key          String
+  scope        String
+  orderId      String?
+  order        Order?   @relation(fields: [orderId], references: [id], onDelete: SetNull)
+
+  requestHash  String
+  responseJson Json?
+  statusCode   Int?
+
+  lockedAt     DateTime @default(now())
+  completedAt  DateTime?
+  expiresAt    DateTime
+
+  createdAt DateTime @default(now())
+
+  @@unique([scope, key])
+  @@index([expiresAt])
+}
+
+/// Process-wide singleton guarding against overlapping cron/worker runs.
+model WorkerLease {
+  id        String   @id @default(cuid())
+  name      String   @unique
+  holderId  String
+  expiresAt DateTime
+  acquiredAt DateTime @default(now())
+}

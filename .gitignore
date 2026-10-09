@@ -1,0 +1,31 @@
+# dependencies
+node_modules/
+.pnpm-store/
+
+# next.js
+.next/
+out/
+build/
+next-env.d.ts
+
+# testing
+coverage/
+
+# environment — NEVER commit real secrets (spec §23)
+.env
+.env.local
+.env.*.local
+!.env.example
+
+# local scratch
+.tmp/
+*.log
+npm-debug.log*
+
+# os
+.DS_Store
+Thumbs.db
+
+# misc
+.vercel
+*.tsbuildinfo
