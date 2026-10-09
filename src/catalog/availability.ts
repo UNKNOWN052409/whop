@@ -39,6 +39,50 @@ export function deriveAvailability(
   return inventoryCount > 0 ? 'IN_STOCK' : 'OUT_OF_STOCK';
 }
 
+/**
+ * At or below this many sellable units the storefront says "Low stock".
+ * Overridable per environment so merchandising can tune it without a deploy,
+ * following the same shape as `catalogTtlSeconds()` in cache-control.ts: an
+ * unset or malformed value uses the documented default rather than silently
+ * disabling the signal.
+ */
+const DEFAULT_LOW_STOCK_THRESHOLD = 5;
+
+export function lowStockThreshold(): number {
+  const raw = process.env.LOW_STOCK_THRESHOLD;
+  if (!raw || !/^\d+$/.test(raw.trim())) return DEFAULT_LOW_STOCK_THRESHOLD;
+  const parsed = Number(raw.trim());
+  if (!Number.isSafeInteger(parsed) || parsed <= 0) return DEFAULT_LOW_STOCK_THRESHOLD;
+  return parsed;
+}
+
+/**
+ * The ONLY inventory detail the public storefront may render: a boolean.
+ *
+ * WHY NOT THE COUNT
+ * `Product.inventoryCount` is an exact, per-SKU remaining-units figure. The
+ * storefront used to print it ("· 12 left") on every card and product page, so
+ * one unauthenticated `GET /` returned the precise stock level of the whole
+ * catalog. That is inventory probing, not commerce: it lets a competitor or a
+ * reseller time purchases to a known-low SKU, and it turns a public page into a
+ * free stock oracle that never has to touch checkout.
+ *
+ * WHAT THE CUSTOMER LOSES — nothing they need. "In stock" / "Low stock" /
+ * "Sold out" is what a buyer actually acts on. The exact figure is still
+ * enforced server-side at purchase time: `POST /api/checkout` refuses with the
+ * shared 409 `INSUFFICIENT_INVENTORY` when the counter is short, and
+ * `assertPurchasable()` is the allocation gate.
+ *
+ * A sold-out product is never "low stock": the badge already reads "Sold out",
+ * and a second, contradictory hint would be noise.
+ */
+export function isLowStock(
+  inventoryCount: number,
+  threshold: number = lowStockThreshold(),
+): boolean {
+  return Number.isSafeInteger(inventoryCount) && inventoryCount > 0 && inventoryCount <= threshold;
+}
+
 export interface AvailableInventoryOptions {
   /** Injected clock, so expiry sweeps and tests stay deterministic. */
   now?: Date;

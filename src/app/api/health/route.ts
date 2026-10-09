@@ -1,5 +1,6 @@
 /**
- * Health and readiness (spec §24).
+ * Liveness: is this process alive and are its dependencies in a known state?
+ * (Readiness lives in the sibling `/api/ready`.)
  *
  * This endpoint is the proof that "unconfigured" is a first-class, visible
  * state: an integration with no credentials reports `NOT_CONFIGURED`, in
@@ -17,30 +18,23 @@
  */
 
 import { appConfig, integrationStatus, isProduction, whopConfig } from '@/lib/env';
-import { checkDatabase } from '@/db/prisma';
 import {
   evaluateAlerts,
   recentAlerts,
 } from '@/observability/alerts';
-import { recordDatabaseProbe, registry, paymentWindowCounts } from '@/observability/metrics';
+import { registry, paymentWindowCounts } from '@/observability/metrics';
 import { safeDiagnostic } from '@/observability/redact';
 import { collectHeartbeatReport } from '@/observability/heartbeat';
+// The probe itself lives in `_lib/probe.ts` so that /api/ready measures
+// exactly what this endpoint measures. What to DO with the measurement is the
+// policy below and stays here.
+import { jsonProbe, notConfiguredIntegrations, probeDatabase } from '../_lib/probe';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
 
-/** Health is a live probe, never a cached document. */
-const NO_STORE_HEADERS: Record<string, string> = {
-  'Cache-Control': 'no-store, no-cache, must-revalidate, max-age=0',
-  Pragma: 'no-cache',
-  Expires: '0',
-};
-
 type OverallStatus = 'ok' | 'degraded' | 'down';
-
-/** Keys of `integrationStatus()` that carry a status (i.e. are not a list). */
-const INTEGRATION_KEYS = ['payments', 'email', 'redis', 'queue', 'encryption'] as const;
 
 /**
  * Verbose detail is for local debugging and CI. In production it is ignored
@@ -54,24 +48,14 @@ function wantsVerbose(request: Request): boolean {
   return value === '1' || value === 'true';
 }
 
-function json(body: unknown, status: number): Response {
-  return new Response(JSON.stringify(body, null, 2), {
-    status,
-    headers: { ...NO_STORE_HEADERS, 'Content-Type': 'application/json; charset=utf-8' },
-  });
-}
-
 export async function GET(request: Request): Promise<Response> {
   const integrations = integrationStatus();
 
-  const database = await checkDatabase();
-  recordDatabaseProbe(database.ok, database.latencyMs);
+  const database = await probeDatabase();
 
   const heartbeat = await collectHeartbeatReport();
 
-  const notConfigured = INTEGRATION_KEYS.filter(
-    (key) => integrations[key] === 'NOT_CONFIGURED',
-  );
+  const notConfigured = notConfiguredIntegrations(integrations);
 
   // down      -> the process cannot serve a payment at all (no database).
   // degraded  -> serving, but something required is not configured.
@@ -154,5 +138,5 @@ export async function GET(request: Request): Promise<Response> {
   // `degraded` stays 200 on purpose: the process is serving, and a load
   // balancer that restarts it would not fix a missing environment variable.
   // `down` is 503 because there genuinely is no database.
-  return json(body, status === 'down' ? 503 : 200);
+  return jsonProbe(body, status === 'down' ? 503 : 200);
 }

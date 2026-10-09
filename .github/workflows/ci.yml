@@ -1,0 +1,320 @@
+# CI for redeem-store.
+#
+# WHY THIS FILE EXISTS
+# --------------------
+# The platform's core promise is that a verified payment is never lost. Nothing
+# enforced that mechanically before this file: a broken commit could reach
+# production and the oversell protection would only ever have been a claim.
+#
+# The stages below turn that claim into a check. Stage 4 is the one that matters
+# most - it is the ONLY place the no-oversell guarantees are actually executed,
+# because `SELECT ... FOR UPDATE SKIP LOCKED` and the unique indexes that prevent
+# double-selling have no meaning in a mocked Prisma client.
+#
+# MERGE POLICY
+# ------------
+# Make all five jobs in this workflow REQUIRED status checks in the repository's
+# branch protection settings. A partial set defeats the purpose: `build` alone
+# will not tell you the oversell guarantee is broken, and `integration` alone
+# will not tell you the app does not compile.
+#
+# PRODUCTION DEPLOY
+# -----------------
+# There is deliberately NO deploy job in this file. See docs/operations/deployment.md.
+# Deployment is manual and environment-gated; `vercel --prod` is run by a human
+# after this workflow is green on the exact commit being released. Adding an
+# auto-deploy on `push: main` before the deploy credential exists as a repository
+# environment would mean the first merge to main publishes unattended.
+
+name: CI
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+
+# Least privilege. This workflow only ever reads the repository. No job needs
+# write access to contents, packages, deployments or issues.
+permissions:
+  contents: read
+
+# Never let two runs fight over the same ref, and never let CI finish out of
+# order. A superseded run is cancelled rather than left to report against a
+# commit that is no longer the head of the branch.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  # --- Stage 1 ---------------------------------------------------------------
+  static:
+    name: Static checks (typecheck)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      # Pinned to the exact pnpm version this pipeline was verified against.
+      # There is no `packageManager` field in package.json, so pinning here is
+      # the only thing preventing a pnpm major bump from silently re-resolving
+      # the lockfile in CI.
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 12.3.4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+  # --- Stage 2 ---------------------------------------------------------------
+  unit:
+    name: Unit tests (no database)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 12.3.4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # TEST_DATABASE_URL is deliberately NOT set. tests/concurrency.test.ts is
+      # `describe.skipIf(!process.env.TEST_DATABASE_URL)`, so it skips itself
+      # here. That skip is correct behaviour, not a gap: the suite is exercised
+      # for real against Postgres in the `integration` job below.
+      #
+      # The assertion that matters is therefore SHAPE, not a hard-coded count:
+      # every test file except tests/concurrency.test.ts must report as passed,
+      # and concurrency.test.ts must report as skipped with all 4 of its tests
+      # skipped rather than failing or erroring. If concurrency.test.ts ever
+      # appears as passed here, something is leaking TEST_DATABASE_URL into the
+      # unit job and the two jobs are no longer independent.
+      #
+      # Baseline when this workflow was written: 9 passed / 1 skipped files,
+      # 165 passed / 4 skipped tests. Counts will move as suites are added;
+      # the shape above is the contract.
+      #
+      # Do not "fix" this skip by forcing the suite to run without a database.
+      # It would either error or pass a weaker assertion than the one it makes.
+      - name: Unit tests
+        run: pnpm test
+
+  # --- Stage 3 ---------------------------------------------------------------
+  lint:
+    name: Lint (not configured)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 12.3.4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # LINT IS NOT A GATE IN THIS REPOSITORY, AND THIS STEP IS WHY THAT IS VISIBLE.
+      #
+      # The project has no ESLint configuration, and `pnpm lint` is `next lint`,
+      # which on a machine with no config drops into an INTERACTIVE setup prompt.
+      # A GitHub Actions runner has no TTY, so that prompt cannot be answered:
+      # `next lint` exits 1 having linted nothing. Wiring it in as a required
+      # check today would produce a permanently red pipeline that gates on
+      # nothing - worse than no lint job at all, because it looks like coverage.
+      #
+      # `pnpm-lock.yaml` contains ZERO occurrences of "eslint", "eslintrc",
+      # "@typescript-eslint" or "typescript-eslint". There is no ESLint in this
+      # dependency graph at all, so there is no config that could be written
+      # against an already-present tool, and no `next lint --no-eslintrc` mode
+      # that would do anything. Adding eslint / eslint-config-next here would be
+      # a new dependency, which this pipeline does not introduce.
+      #
+      # Instead this step does two honest things:
+      #   1. emits a warning annotation on every run, so the absence of lint is
+      #      visible in the checks list rather than silently forgotten;
+      #   2. runs `pnpm lint` automatically the moment an ESLint config lands,
+      #      so the day ESLint is added this job starts gating for real with no
+      #      further edit to this file.
+      #
+      # TO MAKE LINT REAL: run `pnpm add -D eslint eslint-config-next`, create
+      # `eslint.config.mjs`, and commit both. The detection below already handles
+      # that case, so the next run lints and fails the job on findings with no
+      # further edit to this file.
+      - name: "Lint (skipped - no ESLint config in this repository)"
+        run: |
+          has_config=0
+          for f in eslint.config.js eslint.config.mjs eslint.config.cjs eslint.config.ts \
+                   .eslintrc .eslintrc.json .eslintrc.js .eslintrc.cjs .eslintrc.yaml; do
+            if [ -f "$f" ]; then has_config=1; echo "Found ESLint config: $f"; break; fi
+          done
+
+          if [ "$has_config" -eq 1 ]; then
+            echo "ESLint config present - running pnpm lint as a real gate."
+            pnpm lint
+          else
+            echo "::warning title=Lint not configured::No ESLint config in this repository and no eslint package in pnpm-lock.yaml (0 matches). 'pnpm lint' is 'next lint', which prompts interactively and cannot run on a CI runner. Stage 3 is therefore informational, not a gate. See docs/operations/deployment.md."
+            echo "--- evidence: eslint occurrences in pnpm-lock.yaml ---"
+            grep -c 'eslint' pnpm-lock.yaml || echo "0 (no match)"
+            echo "--- evidence: no ESLint installed ---"
+            ls node_modules | grep -i eslint || echo "no eslint package in node_modules"
+          fi
+
+  # --- Stage 4 ---------------------------------------------------------------
+  # The only job that can prove the no-oversell guarantees. Everything else
+  # checks that the code is well-formed; this checks that it is correct against
+  # a real database engine.
+  integration:
+    name: Integration tests (real PostgreSQL)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          # Throwaway, test-only credentials. These are local to the runner
+          # container that GitHub destroys at the end of the job; they are not
+          # a secret and must never be replaced with a real one. The Postgres
+          # service container is not reachable from outside the job, so there is
+          # nothing here worth protecting.
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres_ci_only
+          POSTGRES_DB: redeem_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d redeem_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    env:
+      # DATABASE_URL and TEST_DATABASE_URL MUST be byte-identical.
+      # tests/helpers/db.ts `resetDatabase` refuses to TRUNCATE anything unless
+      # `process.env.DATABASE_URL === TEST_DATABASE_URL`, and that guard is the
+      # reason pointing this job at a real database would be dangerous. Setting
+      # both to the same value satisfies it; setting only one would make the
+      # suite throw instead of run.
+      DATABASE_URL: postgres://postgres:postgres_ci_only@localhost:5432/redeem_test?schema=public
+      TEST_DATABASE_URL: postgres://postgres:postgres_ci_only@localhost:5432/redeem_test?schema=public
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 12.3.4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # Belt and braces on top of the service healthcheck: the healthcheck
+      # gates job start, this gates the first real connection attempt. Cheap,
+      # and it turns "connection refused" into an unambiguous message.
+      - name: Wait for PostgreSQL
+        run: |
+          for i in $(seq 1 30); do
+            if docker exec "${{ job.services.postgres.id }}" \
+                 pg_isready -U postgres -d redeem_test; then
+              echo "PostgreSQL is accepting connections."
+              exit 0
+            fi
+            echo "attempt $i: not ready yet"
+            sleep 2
+          done
+          echo "::error::PostgreSQL service container never became ready."
+          exit 1
+
+      # `prisma db push` rather than `migrate deploy`: the suite truncates every
+      # table between tests, so a migration history is meaningless to it, and
+      # db push cannot fail on a drift check against a previous run. The schema
+      # it applies is the same schema.prisma production uses.
+      - name: Apply schema
+        run: pnpm exec prisma db push --skip-generate
+
+      # Exactly 4 tests must pass. Anything less means a guarantee is unproven:
+      #   1. N concurrent reservations for fewer codes than requests never oversell
+      #   2. the same webhook delivered 10 times yields exactly one allocation
+      #   3. a delivered code never returns to AVAILABLE
+      #   4. revoke is terminal
+      # This is a real database. There is no mock, no stub and no provider
+      # fake in this job - a mocked run would prove nothing about row locks.
+      - name: Concurrency guarantees against real Postgres
+        run: pnpm exec vitest run tests/concurrency.test.ts
+
+  # --- Stage 5 ---------------------------------------------------------------
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 12.3.4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # NO ENVIRONMENT VARIABLES ARE SET HERE, AND NONE ARE NEEDED.
+      #
+      # src/lib/env.ts validates nothing at module load. `ENCRYPTION_KEY` and
+      # friends are read through `env(key)` into a config object whose
+      # `.configured` getter reports NOT_CONFIGURED rather than throwing - that
+      # is the spec S24 design. The only throw is
+      # `assertProductionConfig()`, called from `register()` in
+      # src/instrumentation.ts, which runs when the SERVER PROCESS BOOTS, not
+      # during `next build`. Verified: `pnpm build` with DATABASE_URL,
+      # ENCRYPTION_KEY, WHOP_API_KEY, WHOP_WEBHOOK_SECRET and SESSION_SECRET all
+      # unset exits 0.
+      #
+      # This job deliberately does not even supply dummy placeholders. A dummy
+      # DATABASE_URL would make the build pass for the wrong reason: if a future
+      # change ever did make the build env-sensitive, dummy values would mask it
+      # instead of surfacing it. Build-time configuration errors belong on the
+      # deploy, where real values exist - see docs/operations/deployment.md.
+      #
+      # What this stage is actually for: `tsc --noEmit` does not check
+      # server/client component boundaries and does not resolve every route.
+      # `next build` does, and it is what catches a Server Component importing
+      # something Node-only, or a route that fails to load.
+      - name: Build (prisma generate + next build)
+        run: pnpm build

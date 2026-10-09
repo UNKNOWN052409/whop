@@ -52,6 +52,8 @@ export {
 
 export {
   deriveAvailability,
+  isLowStock,
+  lowStockThreshold,
   availableInventoryWhere,
   countAvailableInventory,
   getAvailability,

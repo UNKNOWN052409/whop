@@ -2,6 +2,7 @@ import type { Metadata } from 'next';
 import Link from 'next/link';
 import { notFound } from 'next/navigation';
 import { getProductBySlug } from '@/catalog';
+import { isLowStock } from '@/catalog/availability';
 import { Alert } from '@/components/alert';
 import { AvailabilityBadge } from '@/components/availability-badge';
 import { Button } from '@/components/button';
@@ -84,7 +85,10 @@ export default async function ProductPage({ params }: PageProps) {
               {product.productName}
             </h1>
             <div className="mt-3 flex flex-wrap items-center gap-2">
-              <AvailabilityBadge availability={product.availability} count={product.inventoryCount} />
+              <AvailabilityBadge
+                availability={product.availability}
+                lowStock={isLowStock(product.inventoryCount)}
+              />
               <span className="rounded-full border border-line bg-surface-2 px-2.5 py-0.5 text-xs text-muted">
                 Region: {product.region || 'Worldwide'}
               </span>

@@ -1,4 +1,5 @@
 import type { PublicProduct } from '@/catalog';
+import { isLowStock } from '@/catalog/availability';
 import { formatMoney } from '@/lib/money';
 import Link from 'next/link';
 import { AvailabilityBadge } from './availability-badge';
@@ -52,7 +53,10 @@ export function ProductCard({
       <div className="relative aspect-[4/3] w-full overflow-hidden bg-surface-2">
         <ProductImage src={product.imageUrl} alt={product.productName} caption={product.brand} />
         <div className="absolute left-3 top-3">
-          <AvailabilityBadge availability={product.availability} count={product.inventoryCount} />
+          <AvailabilityBadge
+            availability={product.availability}
+            lowStock={isLowStock(product.inventoryCount)}
+          />
         </div>
       </div>
 
