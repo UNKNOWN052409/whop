@@ -45,14 +45,20 @@ export function ProductCard({
   return (
     <article
       className={cn(
-        'group flex flex-col overflow-hidden rounded-xl border border-line bg-surface',
-        'transition-colors hover:border-line-strong',
+        'group panel flex flex-col overflow-hidden',
+        // Lift and reveal, but only for a card that can actually be acted on. A
+        // sold-out card that rises on hover implies it is buyable, which is a
+        // small lie told through motion.
+        canBuy &&
+          'transition-[transform,border-color,box-shadow] duration-300 ease-[cubic-bezier(0.22,1,0.36,1)] ' +
+            'hover:-translate-y-0.5 hover:border-line-strong ' +
+            'hover:shadow-[0_12px_32px_-12px_rgb(0_0_0/0.6)]',
         className,
       )}
     >
       <div className="relative aspect-[4/3] w-full overflow-hidden bg-surface-2">
         <ProductImage src={product.imageUrl} alt={product.productName} caption={product.brand} />
-        <div className="absolute left-3 top-3">
+        <div className="absolute left-4 top-4">
           <AvailabilityBadge
             availability={product.availability}
             lowStock={isLowStock(product.inventoryCount)}
@@ -60,40 +66,53 @@ export function ProductCard({
         </div>
       </div>
 
-      <div className="flex flex-1 flex-col gap-3 p-4">
+      <div className="flex flex-1 flex-col p-5">
         <div className="min-w-0">
-          {product.brand ? (
-            <p className="truncate text-xs uppercase tracking-wide text-subtle">{product.brand}</p>
-          ) : null}
-          <Heading className="mt-0.5 truncate text-base font-semibold text-fg">
-            <Link href={`/product/${encodeURIComponent(product.slug)}`} className="hover:underline">
+          {product.brand ? <p className="eyebrow">{product.brand}</p> : null}
+          <Heading className="mt-2 text-lg font-medium leading-snug text-fg">
+            <Link
+              href={`/product/${encodeURIComponent(product.slug)}`}
+              // The underline is what tells you the title is the link. A colour
+              // change alone is invisible to anyone who cannot distinguish the
+              // two colours.
+              className="decoration-line-strong decoration-1 underline-offset-4 hover:underline"
+            >
               {product.productName}
             </Link>
           </Heading>
         </div>
 
-        <dl className="grid grid-cols-2 gap-x-3 gap-y-1.5 text-sm">
-          <dt className="text-muted">Value</dt>
-          <dd className="text-right font-medium text-fg">
-            <Money amountMinor={product.faceValueMinor} currency={product.currency} />
-          </dd>
-          <dt className="text-muted">Price</dt>
-          <dd className="text-right font-semibold text-accent">
-            <Money amountMinor={product.sellingPriceMinor} currency={product.currency} />
-          </dd>
-          <dt className="text-muted">Delivery</dt>
-          <dd className="text-right text-fg">{product.deliveryMethod === 'EMAIL' ? 'Email' : product.deliveryMethod}</dd>
-        </dl>
+        {/* PRICE IS THE HEADLINE, NOT A TABLE ROW.
+            A shopper's eye goes to the largest number on a card, and that number
+            is the one they pay. So the price leads, in the accent, at display
+            scale; the face value of the code sits beneath it as the secondary
+            fact. Both stay labelled — this business sells ABOVE face value, and
+            an unlabelled pair of numbers invites the reader to invert them. */}
+        <div className="mt-5 border-t border-line pt-5">
+          <div className="flex items-baseline justify-between gap-3">
+            <span className="text-sm text-muted">Price</span>
+            <span className="text-2xl font-semibold text-accent">
+              <Money amountMinor={product.sellingPriceMinor} currency={product.currency} />
+            </span>
+          </div>
+          <div className="mt-1.5 flex items-baseline justify-between gap-3">
+            <span className="text-sm text-muted">Value</span>
+            <span className="text-sm text-fg">
+              <Money amountMinor={product.faceValueMinor} currency={product.currency} />
+            </span>
+          </div>
+        </div>
 
-        <p className="text-xs text-subtle">
-          You pay {formatMoney(product.sellingPriceMinor, product.currency)} and receive a code worth{' '}
-          {formatMoney(product.faceValueMinor, product.currency)}.
+        <p className="mt-4 text-xs leading-relaxed text-subtle">
+          You pay {formatMoney(product.sellingPriceMinor, product.currency)} and receive a code
+          worth {formatMoney(product.faceValueMinor, product.currency)}.
+          {product.deliveryMethod === 'EMAIL' ? ' Delivered by email.' : null}
         </p>
 
-        <div className="mt-auto pt-1">
+        <div className="mt-auto pt-5">
           {canBuy ? (
             <Button href={checkoutHref} size="md" className="w-full">
-              BUY NOW
+              Buy now
             </Button>
           ) : (
             <Button
@@ -106,11 +125,11 @@ export function ProductCard({
                   : `${product.productName} is sold out`
               }
             >
-              {inStock ? 'CHECKOUT UNAVAILABLE' : 'SOLD OUT'}
+              {inStock ? 'Checkout unavailable' : 'Sold out'}
             </Button>
           )}
           {!canBuy && unavailableNotice ? (
-            <p className="mt-2 text-xs text-muted">{unavailableNotice}</p>
+            <p className="mt-3 text-xs text-muted">{unavailableNotice}</p>
           ) : null}
         </div>
       </div>

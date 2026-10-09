@@ -3,27 +3,53 @@
 /**
  * Design tokens (Tailwind v4 `@theme`).
  *
- * Restrained on purpose: one near-black background ramp, one accent, three
- * semantic states. Every token below becomes a real utility — `bg-surface`,
- * `text-muted`, `border-line`, `text-accent` — so components never hard-code a
- * hex value and a palette change is a one-file edit.
+ * The storefront is a dark, quiet surface that a single product accent sits on
+ * top of. Three rules decide whether it reads as premium or as a default
+ * bootstrap dark theme, and all three are token-level:
+ *
+ *  1. SURFACES ARE A RAMP, NOT A RAINBOW. Every surface is the same hue at a
+ *     different lightness. When a page needs a card that reads as "raised", it
+ *     moves one step up the ramp — it does not introduce a new colour. That is
+ *     why `--color-line` is a translucent white rather than a grey: a border
+ *     that is lighter than the surface behind it reads as a lit edge, which is
+ *     what separates a panel from the page in low light.
+ *
+ *  2. ONE ACCENT, AND IT IS MONEY. `--color-accent` is reserved for value,
+ *     price, and "this is the thing you buy". It is never used for decoration,
+ *     because a shopper who has learned that green means "costs money" loses
+ *     that signal the moment green starts meaning "nice button". Urgency and
+ *     failure use `--color-danger`; low stock uses `--color-warning`; neither
+ *     borrows the accent.
+ *
+ *  3. TYPE DOES THE HEAVY LIFTING. Premium here is not gradients and glass —
+ *     it is a real display serif at a confident size against a quiet UI sans,
+ *     with tight tracking on the large sizes and generous leading on the small
+ *     ones. `--font-display` is loaded through `next/font` in the root layout
+ *     (see `layout.tsx`), which self-hosts the files so the strict
+ *     `font-src 'self'` CSP in `next.config.ts` still holds.
+ *
+ * Every token below becomes a real utility — `bg-surface`, `text-muted`,
+ * `border-line`, `text-accent` — so components never hard-code a hex value and
+ * a palette change is a one-file edit.
  */
 @theme {
-  /* Surfaces, darkest to lightest. */
+  /* Surfaces, darkest to lightest. One hue, rising lightness. */
   --color-bg: #07080b;
   --color-surface: #0e1016;
   --color-surface-2: #141822;
   --color-surface-3: #1b2130;
+  --color-surface-4: #232a39;
 
-  --color-line: #232a39;
-  --color-line-strong: #33405a;
+  /* Translucent white, not grey. A lit edge, not a drawn one. */
+  --color-line: rgb(255 255 255 / 0.07);
+  --color-line-strong: rgb(255 255 255 / 0.14);
 
   /* Text. `--color-fg` is the default body colour. */
-  --color-fg: #f2f5fa;
-  --color-muted: #97a2b6;
+  --color-fg: #f4f6fa;
+  --color-muted: #98a2b6;
   --color-subtle: #6b7688;
 
-  /* Accent + semantics. */
+  /* Accent + semantics. Accent means "money", nothing else. */
   --color-accent: #34d399;
   --color-accent-strong: #10b981;
   --color-accent-ink: #052e20;
@@ -32,16 +58,28 @@
   --color-warning: #fbbf24;
   --color-danger: #f87171;
 
+  /* A cool wash used behind hero sections. Sits under everything, never on
+     top of text — it is atmosphere, not content. */
+  --color-aurora: #1b2a4a;
+
   --font-sans:
-    ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue",
-    Arial, "Noto Sans", sans-serif;
-  --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+    var(--font-inter), ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
+    "Helvetica Neue", Arial, "Noto Sans", sans-serif;
+  --font-display:
+    var(--font-fraunces), ui-serif, Georgia, Cambria, "Times New Roman", serif;
+  --font-mono:
+    ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+
+  /* A long, slow easing. Used for hovers and reveals so motion reads as one
+     system rather than a set of unrelated transitions. */
+  --ease-out-quiet: cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 @layer base {
   html {
     color-scheme: dark;
     -webkit-text-size-adjust: 100%;
+    scroll-behavior: smooth;
   }
 
   body {
@@ -50,6 +88,11 @@
     font-family: var(--font-sans);
     -webkit-font-smoothing: antialiased;
     text-rendering: optimizeLegibility;
+    /* Tabular figures everywhere by default. Money that changes width between
+       a "1" and a "8" makes a price column look unstable; `src/components/
+       money.tsx` sets this explicitly too, but a stray amount in prose should
+       not be the one place it jitters. */
+    font-variant-numeric: tabular-nums;
   }
 
   /* Visible, high-contrast keyboard focus everywhere (accessibility). */
@@ -62,6 +105,38 @@
   ::selection {
     background-color: var(--color-accent);
     color: var(--color-accent-ink);
+  }
+
+  /* Headings inherit the display face and tighten as they grow. Tracking is
+     negative at large sizes because a serif's sidebearings already carry
+     rhythm; positive tracking at display size is what makes a heading look
+     loose rather than confident. */
+  h1,
+  h2,
+  h3 {
+    font-family: var(--font-display);
+    letter-spacing: -0.02em;
+    text-wrap: balance;
+  }
+
+  /* Long paragraphs should not leave rivers of white space on a wide screen.
+     `pretty` is supported in every browser that supports `text-wrap: balance`;
+     older engines ignore it and fall back to normal wrapping. */
+  p {
+    text-wrap: pretty;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    html {
+      scroll-behavior: auto;
+    }
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+    }
   }
 }
 
@@ -88,5 +163,63 @@
     overflow: visible;
     clip: auto;
     white-space: nowrap;
+  }
+
+  /*
+   * Ambient light behind a hero.
+   *
+   * Two offset radial washes plus a vertical fade. It is deliberately built
+   * from the surface ramp and one cool tint rather than from the accent, so it
+   * gives the page depth without putting "money green" anywhere near the
+   * headline — the eye should read the type first and the light second.
+   *
+   * Pointer-events are off so it can be layered over the page without
+   * intercepting a click on the hero CTA beneath it.
+   */
+  .aurora {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    background:
+      radial-gradient(
+        60rem 32rem at 15% -10%,
+        color-mix(in oklab, var(--color-aurora) 70%, transparent),
+        transparent 70%
+      ),
+      radial-gradient(
+        48rem 28rem at 85% 0%,
+        color-mix(in oklab, var(--color-accent) 8%, transparent),
+        transparent 65%
+      ),
+      linear-gradient(to bottom, transparent 40%, var(--color-bg) 100%);
+  }
+
+  /*
+   * A panel that reads as raised rather than drawn.
+   *
+   * The top edge is lighter than the bottom, which is what a real light source
+   * above the panel would produce. A flat border reads as a rectangle; a lit
+   * edge reads as an object with a surface.
+   */
+  .panel {
+    border: 1px solid var(--color-line);
+    background:
+      linear-gradient(
+        to bottom,
+        color-mix(in oklab, white 3%, transparent),
+        transparent 40%
+      ),
+      var(--color-surface);
+    border-radius: calc(var(--radius-2xl, 1rem));
+  }
+
+  /* The eyebrow label above every section heading. */
+  .eyebrow {
+    font-family: var(--font-sans);
+    font-size: 0.6875rem;
+    font-weight: 600;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: var(--color-subtle);
   }
 }

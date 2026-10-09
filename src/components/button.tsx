@@ -28,23 +28,35 @@ export interface ButtonProps {
   'aria-controls'?: string;
 }
 
+/**
+ * The primary button carries a low-opacity accent bloom on hover. It is the one
+ * place in the system where light appears to come from the control itself,
+ * which is what makes it read as the main action rather than just another
+ * rectangle.
+ */
 const VARIANTS: Record<ButtonVariant, string> = {
   primary:
-    'bg-accent text-accent-ink hover:bg-accent-strong disabled:hover:bg-accent font-semibold',
-  secondary: 'bg-surface-2 text-fg border border-line hover:bg-surface-3 hover:border-line-strong',
+    'bg-accent text-accent-ink font-semibold ' +
+    'shadow-[0_1px_0_rgb(255_255_255/0.15)_inset] ' +
+    'hover:bg-accent-strong hover:shadow-[0_1px_0_rgb(255_255_255/0.2)_inset,0_8px_24px_-8px_rgb(52_211_153/0.5)] ' +
+    'active:translate-y-px',
+  secondary:
+    'bg-surface-2 text-fg border border-line hover:bg-surface-3 hover:border-line-strong active:translate-y-px',
   ghost: 'bg-transparent text-muted hover:text-fg hover:bg-surface-2',
-  danger: 'bg-danger text-[#2b0606] hover:bg-[#ef5f5f] font-semibold',
+  danger: 'bg-danger text-[#2b0606] font-semibold hover:bg-[#ef5f5f] active:translate-y-px',
 };
 
 const SIZES: Record<ButtonSize, string> = {
-  sm: 'px-3 py-1.5 text-sm rounded-md gap-1.5',
-  md: 'px-4 py-2 text-sm rounded-lg gap-2',
-  lg: 'px-6 py-3 text-base rounded-lg gap-2',
+  sm: 'px-3.5 py-2 text-sm rounded-lg gap-1.5',
+  md: 'px-5 py-2.5 text-sm rounded-lg gap-2',
+  lg: 'px-7 py-3.5 text-base rounded-xl gap-2',
 };
 
 const BASE =
-  'inline-flex items-center justify-center font-medium transition-colors select-none ' +
-  'disabled:opacity-50 disabled:cursor-not-allowed';
+  'inline-flex items-center justify-center font-medium select-none ' +
+  'transition-[background-color,border-color,box-shadow,transform,color] ' +
+  'duration-200 ease-[cubic-bezier(0.22,1,0.36,1)] ' +
+  'disabled:opacity-50 disabled:cursor-not-allowed disabled:active:translate-y-0';
 
 export function Button({
   variant = 'primary',

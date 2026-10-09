@@ -50,22 +50,24 @@ export default async function ProductPage({ params }: PageProps) {
 
   return (
     <div className="mx-auto w-full max-w-6xl px-4 py-10 sm:px-6">
-      <nav aria-label="Breadcrumb" className="mb-6 text-sm text-muted">
+      <nav aria-label="Breadcrumb" className="mb-8 text-sm text-muted">
         <ol className="flex items-center gap-2">
           <li>
             <Link href="/" className="hover:text-fg hover:underline">
               Shop
             </Link>
           </li>
-          <li aria-hidden="true">/</li>
+          <li aria-hidden="true" className="text-subtle">
+            /
+          </li>
           <li className="truncate text-fg" aria-current="page">
             {product.productName}
           </li>
         </ol>
       </nav>
 
-      <div className="grid gap-8 md:grid-cols-2">
-        <div className="overflow-hidden rounded-xl border border-line bg-surface-2">
+      <div className="grid gap-10 md:grid-cols-2 md:gap-14">
+        <div className="panel overflow-hidden">
           <div className="aspect-[4/3] w-full">
             <ProductImage
               src={product.imageUrl}
@@ -76,15 +78,16 @@ export default async function ProductPage({ params }: PageProps) {
           </div>
         </div>
 
-        <div className="flex flex-col gap-5">
+        <div className="flex flex-col gap-6">
           <div>
-            {product.brand ? (
-              <p className="text-xs uppercase tracking-wide text-subtle">{product.brand}</p>
-            ) : null}
-            <h1 className="mt-1 text-2xl font-bold tracking-tight text-fg sm:text-3xl">
+            {product.brand ? <p className="eyebrow">{product.brand}</p> : null}
+            {/* Display serif at the largest size on the site. This is the one
+                page where the product name is the entire argument, so it gets
+                the full type scale. */}
+            <h1 className="mt-2.5 text-3xl font-semibold leading-tight text-fg sm:text-4xl">
               {product.productName}
             </h1>
-            <div className="mt-3 flex flex-wrap items-center gap-2">
+            <div className="mt-4 flex flex-wrap items-center gap-2">
               <AvailabilityBadge
                 availability={product.availability}
                 lowStock={isLowStock(product.inventoryCount)}
@@ -92,37 +95,45 @@ export default async function ProductPage({ params }: PageProps) {
               <span className="rounded-full border border-line bg-surface-2 px-2.5 py-0.5 text-xs text-muted">
                 Region: {product.region || 'Worldwide'}
               </span>
-              <span className="rounded-full border border-line bg-surface-2 px-2.5 py-0.5 text-xs text-muted">
-                Delivery: {product.deliveryMethod === 'EMAIL' ? 'Email' : product.deliveryMethod}
-              </span>
+              {product.deliveryMethod === 'EMAIL' ? (
+                <span className="rounded-full border border-line bg-surface-2 px-2.5 py-0.5 text-xs text-muted">
+                  Delivery: Email
+                </span>
+              ) : null}
             </div>
           </div>
 
-          {/* Value vs price — stated explicitly, never left to inference. */}
-          <div className="rounded-xl border border-line bg-surface p-5">
-            <dl className="grid grid-cols-[auto_1fr] gap-x-6 gap-y-3">
-              <dt className="text-sm text-muted">Value you receive</dt>
-              <dd className="text-right text-sm font-medium text-fg">
-                <Money amountMinor={product.faceValueMinor} currency={product.currency} />
-              </dd>
+          {/* Value vs price — stated explicitly, never left to inference.
+              The price leads at display scale because that is the number the
+              shopper is about to be charged; the face value of the code is the
+              secondary fact. Both stay labelled — this business sells ABOVE
+              face value, and an unlabelled pair of numbers invites the reader
+              to invert them. */}
+          <div className="panel p-6">
+            <dl className="grid grid-cols-[auto_1fr] items-baseline gap-x-6 gap-y-3">
               <dt className="text-sm text-muted">Customer price</dt>
-              <dd className="text-right text-lg font-bold text-accent">
+              <dd className="text-right text-3xl font-semibold text-accent">
                 <Money amountMinor={product.sellingPriceMinor} currency={product.currency} />
+              </dd>
+              <dt className="text-sm text-muted">Value you receive</dt>
+              <dd className="text-right text-base font-medium text-fg">
+                <Money amountMinor={product.faceValueMinor} currency={product.currency} />
               </dd>
               {premium !== 0 ? (
                 <>
                   <dt className="text-sm text-muted">Premium over value</dt>
-                  <dd className="text-right text-sm font-medium text-fg">
+                  <dd className="text-right text-base font-medium text-fg">
                     <Money amountMinor={premium} currency={product.currency} />
                   </dd>
                 </>
               ) : null}
             </dl>
 
-            <p className="mt-4 rounded-lg bg-surface-2 px-3 py-2.5 text-sm text-muted">
-              You pay <strong className="text-fg">{product.priceFormatted}</strong> for a single{' '}
-              <strong className="text-fg">worth {product.valueFormatted}</strong>. The price is the
-              amount charged to your payment method; the value is what the delivered code is worth.
+            <p className="mt-5 border-t border-line pt-4 text-sm leading-relaxed text-muted">
+              You pay <strong className="font-medium text-fg">{product.priceFormatted}</strong> for
+              a single <strong className="font-medium text-fg">worth {product.valueFormatted}</strong>
+              . The price is the amount charged to your payment method; the value is what the
+              delivered code is worth.
             </p>
           </div>
 
@@ -139,21 +150,21 @@ export default async function ProductPage({ params }: PageProps) {
 
           {!readiness.canPay ? <CheckoutReadinessNotice readiness={readiness} /> : null}
 
-          <div className="flex flex-col gap-2">
+          <div className="flex flex-col gap-3">
             {canBuy ? (
               <Button
                 href={`/checkout?product=${encodeURIComponent(product.slug)}`}
                 size="lg"
                 className="w-full"
               >
-                BUY NOW — {product.priceFormatted}
+                Buy now — {product.priceFormatted}
               </Button>
             ) : (
               <Button size="lg" disabled className="w-full">
-                {inStock ? 'CHECKOUT UNAVAILABLE' : 'SOLD OUT'}
+                {inStock ? 'Checkout unavailable' : 'Sold out'}
               </Button>
             )}
-            <p className="text-xs text-subtle">
+            <p className="text-xs leading-relaxed text-subtle">
               Payment is taken on our provider&apos;s hosted checkout page. Your redeem code is
               emailed to you after the payment is verified — it is never shown on this site.
             </p>
